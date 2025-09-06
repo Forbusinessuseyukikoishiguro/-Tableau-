@@ -1,0 +1,271 @@
+import pandas as pd
+import numpy as np
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.impute import SimpleImputer
+import datetime as dt
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# ============================================
+# うさうさ大福店 売上データ前処理
+# ============================================
+
+# サンプルデータ生成（実際のCSVファイル読み込みに置き換え）
+np.random.seed(42)
+date_range = pd.date_range(start='2022-01-01', end='2024-12-31', freq='D')
+
+# 大福店らしいデータ生成
+data = []
+for date in date_range:
+    # 基本売上（季節性考慮）
+    base_sales = 15000  # 基本日売上
+    
+    # 季節調整
+    if date.month in [1, 12]:  # 年末年始
+        seasonal_factor = 1.8
+    elif date.month in [3, 5]:  # 春、母の日
+        seasonal_factor = 1.4
+    elif date.month in [7, 8]:  # 夏休み
+        seasonal_factor = 1.2
+    else:
+        seasonal_factor = 1.0
+    
+    # 曜日効果（土日は売上増）
+    if date.weekday() in [5, 6]:  # 土日
+        day_factor = 1.3
+    else:
+        day_factor = 1.0
+    
+    # 天候効果（雨の日は売上減）
+    weather = np.random.choice(['晴れ', '曇り', '雨'], p=[0.6, 0.25, 0.15])
+    if weather == '雨':
+        weather_factor = 0.8
+    elif weather == '曇り':
+        weather_factor = 0.95
+    else:
+        weather_factor = 1.0
+    
+    # 最終売上計算
+    daily_sales = base_sales * seasonal_factor * day_factor * weather_factor
+    daily_sales *= (1 + np.random.normal(0, 0.1))  # ランダムノイズ
+    daily_sales = max(int(daily_sales), 0)
+    
+    # 商品別売上
+    anko_ratio = 0.4 + np.random.normal(0, 0.05)
+    ichigo_ratio = 0.25 + np.random.normal(0, 0.03)
+    matcha_ratio = 0.2 + np.random.normal(0, 0.03)
+    other_ratio = 1 - anko_ratio - ichigo_ratio - matcha_ratio
+    
+    data.append({
+        'date': date,
+        'total_sales': daily_sales,
+        'anko_sales': int(daily_sales * anko_ratio),
+        'ichigo_sales': int(daily_sales * ichigo_ratio),
+        'matcha_sales': int(daily_sales * matcha_ratio),
+        'other_sales': int(daily_sales * other_ratio),
+        'weather': weather,
+        'customer_count': int(daily_sales / 250),  # 客単価250円想定
+        'temperature': 20 + 10 * np.sin(2 * np.pi * date.timetuple().tm_yday / 365) + np.random.normal(0, 3)
+    })
+
+df = pd.DataFrame(data)
+
+print("=== うさうさ大福店 データ前処理開始 ===")
+print(f"データ期間: {df['date'].min()} ～ {df['date'].max()}")
+print(f"データ件数: {len(df)} 日分")
+
+# ============================================
+# 1. データクリーニング
+# ============================================
+
+print("\n1. データクリーニング実施")
+
+# 欠損値チェック
+print("欠損値状況:")
+print(df.isnull().sum())
+
+# 異常値検出・除去（売上が0円以下や異常に高い値）
+print(f"\n異常値チェック - 売上範囲: {df['total_sales'].min():.0f}円 ～ {df['total_sales'].max():.0f}円")
+
+# IQR法による外れ値検出
+def detect_outliers_iqr(data, column):
+    Q1 = data[column].quantile(0.25)
+    Q3 = data[column].quantile(0.75)
+    IQR = Q3 - Q1
+    lower_bound = Q1 - 1.5 * IQR
+    upper_bound = Q3 + 1.5 * IQR
+    outliers = data[(data[column] < lower_bound) | (data[column] > upper_bound)]
+    return outliers, lower_bound, upper_bound
+
+outliers, lower, upper = detect_outliers_iqr(df, 'total_sales')
+print(f"外れ値検出: {len(outliers)}件 (閾値: {lower:.0f}円 ～ {upper:.0f}円)")
+
+# 外れ値除去（この例では保持）
+df_clean = df.copy()
+
+# ============================================
+# 2. 特徴量エンジニアリング
+# ============================================
+
+print("\n2. 特徴量エンジニアリング実施")
+
+# 日付関連特徴量
+df_clean['year'] = df_clean['date'].dt.year
+df_clean['month'] = df_clean['date'].dt.month
+df_clean['day'] = df_clean['date'].dt.day
+df_clean['weekday'] = df_clean['date'].dt.weekday
+df_clean['is_weekend'] = (df_clean['weekday'] >= 5).astype(int)
+df_clean['quarter'] = df_clean['date'].dt.quarter
+df_clean['day_of_year'] = df_clean['date'].dt.dayofyear
+
+# 季節特徴量（サイン・コサイン変換）
+df_clean['month_sin'] = np.sin(2 * np.pi * df_clean['month'] / 12)
+df_clean['month_cos'] = np.cos(2 * np.pi * df_clean['month'] / 12)
+df_clean['weekday_sin'] = np.sin(2 * np.pi * df_clean['weekday'] / 7)
+df_clean['weekday_cos'] = np.cos(2 * np.pi * df_clean['weekday'] / 7)
+
+# 移動平均（トレンド把握）
+df_clean['sales_ma_7'] = df_clean['total_sales'].rolling(window=7, min_periods=1).mean()
+df_clean['sales_ma_30'] = df_clean['total_sales'].rolling(window=30, min_periods=1).mean()
+
+# ラグ特徴量（前日、前週、前月の売上）
+df_clean['sales_lag_1'] = df_clean['total_sales'].shift(1)
+df_clean['sales_lag_7'] = df_clean['total_sales'].shift(7)
+df_clean['sales_lag_30'] = df_clean['total_sales'].shift(30)
+
+# 前年同期比
+df_clean['sales_yoy'] = df_clean.groupby(['month', 'day'])['total_sales'].pct_change(periods=365)
+
+# 天候ダミー変数
+weather_dummies = pd.get_dummies(df_clean['weather'], prefix='weather')
+df_clean = pd.concat([df_clean, weather_dummies], axis=1)
+
+# 特別な日フラグ（大福店の需要が高まる日）
+def is_special_day(date):
+    special_days = []
+    # 正月（1/1-1/3）
+    if date.month == 1 and date.day <= 3:
+        return 'new_year'
+    # 母の日（5月第2日曜日）
+    elif date.month == 5 and date.weekday() == 6:
+        second_sunday = (date.day - 1) // 7 == 1
+        if second_sunday:
+            return 'mothers_day'
+    # お盆（8/13-8/16）
+    elif date.month == 8 and 13 <= date.day <= 16:
+        return 'obon'
+    # その他の祝日
+    elif date.weekday() == 6 and date.month in [3, 4, 5]:  # 春の日曜日
+        return 'spring_sunday'
+    else:
+        return 'normal'
+
+df_clean['special_day'] = df_clean['date'].apply(is_special_day)
+special_dummies = pd.get_dummies(df_clean['special_day'], prefix='special')
+df_clean = pd.concat([df_clean, special_dummies], axis=1)
+
+# ============================================
+# 3. データ変換・正規化
+# ============================================
+
+print("\n3. データ変換・正規化実施")
+
+# 数値特徴量の標準化（予測精度向上のため）
+numeric_features = ['temperature', 'customer_count', 'sales_ma_7', 'sales_ma_30']
+scaler = StandardScaler()
+df_clean[numeric_features] = scaler.fit_transform(df_clean[numeric_features])
+
+# 欠損値処理（ラグ特徴量）
+df_clean['sales_lag_1'].fillna(method='bfill', inplace=True)
+df_clean['sales_lag_7'].fillna(method='bfill', inplace=True)
+df_clean['sales_lag_30'].fillna(method='bfill', inplace=True)
+df_clean['sales_yoy'].fillna(0, inplace=True)
+
+# ============================================
+# 4. 品質チェック・統計サマリー
+# ============================================
+
+print("\n4. データ品質チェック")
+print("=== 基本統計量 ===")
+print(df_clean[['total_sales', 'anko_sales', 'ichigo_sales', 'matcha_sales']].describe())
+
+print("\n=== 売上トレンド ===")
+monthly_sales = df_clean.groupby(['year', 'month'])['total_sales'].sum().reset_index()
+print("月次売上推移（直近6ヶ月）:")
+print(monthly_sales.tail(6))
+
+print("\n=== 曜日別売上パターン ===")
+weekday_sales = df_clean.groupby('weekday')['total_sales'].mean()
+weekday_names = ['月', '火', '水', '木', '金', '土', '日']
+for i, sales in enumerate(weekday_sales):
+    print(f"{weekday_names[i]}曜日: {sales:.0f}円")
+
+print("\n=== 天候別売上パターン ===")
+weather_sales = df_clean.groupby('weather')['total_sales'].mean()
+for weather, sales in weather_sales.items():
+    print(f"{weather}: {sales:.0f}円")
+
+# ============================================
+# 5. Tableau用データ出力
+# ============================================
+
+print("\n5. Tableau用データ出力")
+
+# Tableau用に最適化されたデータセット作成
+tableau_data = df_clean[[
+    'date', 'total_sales', 'anko_sales', 'ichigo_sales', 'matcha_sales', 'other_sales',
+    'weather', 'customer_count', 'temperature', 'year', 'month', 'weekday', 
+    'is_weekend', 'quarter', 'sales_ma_7', 'sales_ma_30', 'special_day'
+]].copy()
+
+# 日付を文字列形式に変換（Tableauでの読み込み安定性向上）
+tableau_data['date_str'] = tableau_data['date'].dt.strftime('%Y-%m-%d')
+
+# 商品別売上比率計算
+tableau_data['anko_ratio'] = tableau_data['anko_sales'] / tableau_data['total_sales']
+tableau_data['ichigo_ratio'] = tableau_data['ichigo_sales'] / tableau_data['total_sales'] 
+tableau_data['matcha_ratio'] = tableau_data['matcha_sales'] / tableau_data['total_sales']
+
+# CSV出力
+output_file = 'usausa_daifuku_sales_data.csv'
+tableau_data.to_csv(output_file, index=False, encoding='utf-8-sig')
+print(f"✓ Tableau用データを '{output_file}' に出力完了")
+
+print("\n=== 前処理完了 ===")
+print(f"最終データ件数: {len(tableau_data)} 日分")
+print(f"特徴量数: {len(tableau_data.columns)} 個")
+print("Tableauでの予測分析準備完了！")
+
+# 簡易可視化（データ確認用）
+plt.figure(figsize=(15, 10))
+
+plt.subplot(2, 2, 1)
+plt.plot(tableau_data['date'], tableau_data['total_sales'])
+plt.title('うさうさ大福店 売上推移')
+plt.xlabel('日付')
+plt.ylabel('売上（円）')
+plt.xticks(rotation=45)
+
+plt.subplot(2, 2, 2)
+monthly_avg = tableau_data.groupby('month')['total_sales'].mean()
+plt.bar(monthly_avg.index, monthly_avg.values)
+plt.title('月別平均売上')
+plt.xlabel('月')
+plt.ylabel('平均売上（円）')
+
+plt.subplot(2, 2, 3)
+weekday_avg = tableau_data.groupby('weekday')['total_sales'].mean()
+plt.bar(weekday_avg.index, weekday_avg.values)
+plt.title('曜日別平均売上')
+plt.xlabel('曜日（0=月曜）')
+plt.ylabel('平均売上（円）')
+
+plt.subplot(2, 2, 4)
+product_sales = tableau_data[['anko_sales', 'ichigo_sales', 'matcha_sales', 'other_sales']].sum()
+plt.pie(product_sales.values, labels=product_sales.index, autopct='%1.1f%%')
+plt.title('商品別売上構成比')
+
+plt.tight_layout()
+plt.show()
+
+print("\n次のステップ: Tableauでの予測分析実装")
