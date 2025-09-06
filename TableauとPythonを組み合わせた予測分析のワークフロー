@@ -1,0 +1,155 @@
+TableauとPythonを組み合わせた予測分析のワークフローについて説明します。
+
+## Tableauでできる予測機能
+
+**時系列予測**
+- 自動的な季節性検出
+- 指数平滑法による予測
+- 信頼区間の表示
+- ドラッグ&ドロップで簡単実装
+
+**回帰分析**
+- トレンドライン機能
+- 線形・多項式・指数・対数回帰
+- R²値の表示
+- 残差分析
+
+**クラスタリング**
+- K-meansクラスタリング
+- 自動的なクラスター数決定
+- 視覚的なクラスター表示
+
+## Python前処理 → Tableau予測の流れ
+
+### 1. Python前処理コード例
+
+```python
+import pandas as pd
+import numpy as np
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.impute import SimpleImputer
+import datetime as dt
+
+# データ読み込み
+df = pd.read_csv('sales_data.csv')
+
+# 基本的なデータクリーニング
+# 欠損値処理
+numeric_columns = df.select_dtypes(include=[np.number]).columns
+categorical_columns = df.select_dtypes(include=['object']).columns
+
+# 数値データの欠損値を中央値で埋める
+imputer_numeric = SimpleImputer(strategy='median')
+df[numeric_columns] = imputer_numeric.fit_transform(df[numeric_columns])
+
+# カテゴリデータの欠損値を最頻値で埋める
+imputer_categorical = SimpleImputer(strategy='most_frequent')
+df[categorical_columns] = imputer_categorical.fit_transform(df[categorical_columns])
+
+# 日付データの処理
+df['date'] = pd.to_datetime(df['date'])
+df['year'] = df['date'].dt.year
+df['month'] = df['date'].dt.month
+df['quarter'] = df['date'].dt.quarter
+df['day_of_week'] = df['date'].dt.dayofweek
+
+# 外れ値処理（IQR法）
+def remove_outliers(data, column):
+    Q1 = data[column].quantile(0.25)
+    Q3 = data[column].quantile(0.75)
+    IQR = Q3 - Q1
+    lower_bound = Q1 - 1.5 * IQR
+    upper_bound = Q3 + 1.5 * IQR
+    return data[(data[column] >= lower_bound) & (data[column] <= upper_bound)]
+
+# 売上データの外れ値除去
+df_clean = remove_outliers(df, 'sales')
+
+# 特徴量エンジニアリング
+# 移動平均の計算
+df_clean['sales_ma_7'] = df_clean['sales'].rolling(window=7).mean()
+df_clean['sales_ma_30'] = df_clean['sales'].rolling(window=30).mean()
+
+# 前年同期比
+df_clean['sales_yoy'] = df_clean.groupby(['month', 'day'])['sales'].pct_change(periods=365)
+
+# カテゴリ変数のエンコーディング
+le = LabelEncoder()
+for col in categorical_columns:
+    if col != 'date':  # 日付列は除外
+        df_clean[f'{col}_encoded'] = le.fit_transform(df_clean[col])
+
+# Tableau用にCSV出力
+df_clean.to_csv('preprocessed_data.csv', index=False)
+```
+
+### 2. Tableauでの予測実装
+
+**時系列予測の手順**
+1. 前処理済みデータをTableauに接続
+2. 日付フィールドを連続値に設定
+3. 売上などの指標をRowsに配置
+4. Analytics → Forecast をドラッグ
+5. 予測期間と信頼区間を設定
+
+**回帰分析の手順**
+1. 散布図を作成
+2. Analytics → Trend Line を追加
+3. モデルタイプを選択（線形、多項式など）
+4. 統計情報を表示
+
+### 3. 高度な予測のためのPython連携
+
+```python
+# Tableau Server/Online用のTabPy設定
+import tabpy_client
+connection = tabpy_client.Client('http://localhost:9004/')
+
+# カスタム予測関数の定義
+def advanced_forecast(data, periods=30):
+    from statsmodels.tsa.arima.model import ARIMA
+    import warnings
+    warnings.filterwarnings('ignore')
+    
+    # ARIMAモデルでの予測
+    model = ARIMA(data, order=(1,1,1))
+    fitted_model = model.fit()
+    forecast = fitted_model.forecast(steps=periods)
+    
+    return forecast.tolist()
+
+# 関数をTableauに公開
+connection.deploy('arima_forecast', advanced_forecast, 
+                 'ARIMA forecast function', override=True)
+```
+
+### 4. Tableauでの活用例
+
+**ダッシュボード設計**
+- 実績vs予測の比較グラフ
+- 信頼区間付きの予測チャート
+- 予測精度の指標表示
+- インタラクティブなパラメータ調整
+
+**パフォーマンス監視**
+- 予測誤差の可視化
+- モデル精度の時系列変化
+- セグメント別予測性能
+
+## メリット・活用場面
+
+**Tableau予測の利点**
+- 直感的な操作
+- 即座の可視化
+- ビジネスユーザーフレンドリー
+- インタラクティブな分析
+
+**Python前処理の利点**
+- 高度なデータクリーニング
+- カスタム特徴量作成
+- 複雑な統計処理
+- 再現可能な処理
+
+この組み合わせにより、データサイエンティストによる高品質な前処理と、ビジネスユーザーによる直感的な予測分析が可能になります。
+
+特定の業界や用途について、より詳細な実装例をお知りになりたいですか？
